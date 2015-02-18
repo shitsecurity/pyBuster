@@ -10,9 +10,9 @@ gevent.monkey.patch_all()
 
 from gevent import spawn as gspawn, wait
 from gevent.queue import Queue, JoinableQueue
-from gevent.lock import BoundedSemaphore
+from gevent.lock import BoundedSemaphore, RLock
 
-import requests
+import requests.packages
 requests.packages.urllib3.disable_warnings()
 
 from requests import Session
@@ -49,8 +49,8 @@ class ReadReadyLockDict( dict ):
 	def __init__( self, *args, **kwargs ):
 		super( ReadReadyLockDict, self ).__init__( *args, **kwargs )
 		self._locks = {}
-		self._mutex_r = BoundedSemaphore()
-		self._mutex_w = BoundedSemaphore()
+		self._mutex_r = RLock()
+		self._mutex_w = RLock()
 
 	def get( self, key, d=None ):
 		with self._mutex_r:
@@ -115,9 +115,9 @@ def fetch( url, session=None ):
 		return
 	return response
 
-def bust_worker( q_in, q_out, session, url ):
+def bust_worker( q_in, q_out, *args, **kwargs ): # session, url, diff404
 	while True:
-		q_out.put( bust( q_in.get(), session, url ))
+		q_out.put( bust( q_in.get(), *args, **kwargs ))
 		q_in.task_done()
 
 def result_worker( q_in, ratio ):
@@ -140,16 +140,17 @@ def result( response, threshhold=0.95 ):
 		if ratio < threshhold:
 			logging.info('{:.2f} {}'.format( ratio, response.request_url ))
 
-def bust( obj, session=None, url=lambda _: _ ):
-	response = fetch( url(obj), session )
-	response.request_url = url(obj)
+def bust( obj, session=None, url=lambda _: _, diff404=None ):
+	bust_url = url(obj)
+	response = fetch( bust_url, session )
+	response.request_url = bust_url
 	parsed_url = urlparse.urlparse( response.url )
 	if parsed_url.netloc not in cache:
 		rand_str = lambda: ''.join([random.choice(string.letters)
 									for _ in xrange(random.randrange(8,17))])
 		not_found = '{}://{}/{}'.format(parsed_url.scheme,
 										parsed_url.netloc,
-										rand_str())
+										diff404 or rand_str())
 		baseline_response = fetch( not_found, session )
 		cache[parsed_url.netloc] = Baseline(url=url(obj),
 											code=baseline_response.status_code,
@@ -169,12 +170,19 @@ def buster( urls,
 			session=None,
 			concurrency=10,
 			ratio=0.95,
-			url=lambda _: _ ):
+			url=lambda _: _,
+			diff404=None ):
 
 	session = session or create_session()
 	q_in = JoinableQueue(concurrency)
 	q_out = Queue(concurrency)
-	workers = spawn( bust_worker, concurrency, q_in, q_out, session, url )
+	workers = spawn(bust_worker,
+					concurrency,
+					q_in,
+					q_out,
+					session,
+					url,
+					diff404)
 	results = spawn( result_worker, 1, q_out, ratio )
 	[ q_in.put( _ ) for _ in urls ]
 	wait()
@@ -224,6 +232,8 @@ def parse_args():
 						help='show progress', default=False )
 	parser.add_argument('--ratio', metavar='0.95', dest='ratio', type=float,
 						help='diff ratio', default=0.95 )
+	parser.add_argument('--diff', metavar='404_NOT_FOUND', dest='diff',
+						type=str, help='custom 404 path', default=None )
 	args = parser.parse_args()
 
 	if not args.file:
@@ -251,5 +261,6 @@ if __name__ == "__main__":
 	for target in args.target:
 		buster( urls( target, paths, args.exts, progress=args.progress ),
 				ratio=args.ratio,
-				concurrency=args.workers )
+				concurrency=args.workers,
+				diff404=args.diff )
 		cache.clear()
