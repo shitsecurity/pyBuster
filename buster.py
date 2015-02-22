@@ -145,9 +145,7 @@ def result( response, threshhold=0.95 ):
 			logging.info('{:.2f} {}'.format( ratio, response.request_url ))
 			return True
 
-def bust( obj, session=None, url=None, diff404=None ):
-	extract_url = lambda _: _
-	url = url or extract_url
+def bust( obj, session=None, url=lambda _: _, diff404=None ):
 	bust_url = url(obj)
 	response = fetch( bust_url, session )
 	response.request_url = bust_url
@@ -177,7 +175,7 @@ def buster( urls,
 			session=None,
 			concurrency=10,
 			ratio=0.95,
-			url=None,
+			url=lambda _: _,
 			action=None,
 			diff404=None ):
 
