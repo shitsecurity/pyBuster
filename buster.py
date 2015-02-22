@@ -120,9 +120,11 @@ def bust_worker( q_in, q_out, *args, **kwargs ): # session, url, diff404
 		q_out.put( bust( q_in.get(), *args, **kwargs ))
 		q_in.task_done()
 
-def result_worker( q_in, ratio ):
+def result_worker( q_in, ratio, action=None ):
 	while True:
-		result( q_in.get(), threshhold=ratio )
+		data = q_in.get()
+		if(result( data, threshhold=ratio ) and action is not None):
+			action( data )
 
 def result( response, threshhold=0.95 ):
 	domain = urlparse.urlparse(response.url).netloc
@@ -132,15 +134,20 @@ def result( response, threshhold=0.95 ):
 		if response.status_code not in [404,
 										500,
 										502,
+										503,
 										ignore_code]:
 			logging.info('{} {}'.format(response.status_code,
 										response.request_url))
+			return True
 	else:
 		ratio = Diff( baseline.content, response.content ).ratio()
 		if ratio < threshhold:
 			logging.info('{:.2f} {}'.format( ratio, response.request_url ))
+			return True
 
-def bust( obj, session=None, url=lambda _: _, diff404=None ):
+def bust( obj, session=None, url=None, diff404=None ):
+	extract_url = lambda _: _
+	url = url or extract_url
 	bust_url = url(obj)
 	response = fetch( bust_url, session )
 	response.request_url = bust_url
@@ -170,7 +177,8 @@ def buster( urls,
 			session=None,
 			concurrency=10,
 			ratio=0.95,
-			url=lambda _: _,
+			url=None,
+			action=None,
 			diff404=None ):
 
 	session = session or create_session()
@@ -183,7 +191,7 @@ def buster( urls,
 					session,
 					url,
 					diff404)
-	results = spawn( result_worker, 1, q_out, ratio )
+	results = spawn( result_worker, 1, q_out, ratio, action )
 	[ q_in.put( _ ) for _ in urls ]
 	wait()
 
