@@ -105,8 +105,7 @@ def create_session():
 
 def fetch( url, session=None ):
 	session = session or create_session()
-	session.headers.setdefault( 'User-Agent',
-								'Mozilla/5.0 (compatible; Trident/6.0)' )
+	session.headers.setdefault( 'User-Agent', 'Mozilla/5.0' )
 	try:
 		logging.debug('requesting {}'.format( url ))
 		response = session.get( url, timeout=5, verify=False )
