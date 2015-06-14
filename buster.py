@@ -34,6 +34,17 @@ Diff=partial(SequenceMatcher,None)
 
 import argparse
 
+class Options( object ):
+
+	def __init__( self, ratio=0.95,
+						concurrency=10,
+						diff_not_found=None,
+						force_diff=False ):
+		self.ratio = ratio
+		self.concurrency = concurrency
+		self.diff_not_found = diff_not_found
+		self.force_diff = force_diff
+
 class Baseline( object ):
 
 	def __init__( self, url, code, content ):
@@ -114,22 +125,22 @@ def fetch( url, session=None ):
 		return
 	return response
 
-def bust_worker( q_in, q_out, *args, **kwargs ): # session, url, diff404
+def bust_worker( q_in, q_out, *args, **kwargs ): # session, url, options
 	while True:
 		q_out.put( bust( q_in.get(), *args, **kwargs ))
 		q_in.task_done()
 
-def result_worker( q_in, ratio, action=None ):
+def result_worker( q_in, action=None, options=Options() ):
 	while True:
 		data = q_in.get()
-		if(result( data, threshhold=ratio ) and action is not None):
+		if(result( data, options=options ) and action is not None):
 			action( data )
 
-def result( response, threshhold=0.95 ):
+def result( response, options=Options() ):
 	domain = urlparse.urlparse(response.url).netloc
 	baseline = cache.get(domain)
 	ignore_code = baseline.code if baseline is not None else 000
-	if ignore_code != 200:
+	if ignore_code != 200 and not options.force_diff:
 		if response.status_code not in [404,
 										500,
 										502,
@@ -140,11 +151,11 @@ def result( response, threshhold=0.95 ):
 			return True
 	else:
 		ratio = Diff( baseline.content, response.content ).ratio()
-		if ratio < threshhold:
+		if ratio < options.ratio:
 			logging.info('{:.2f} {}'.format( ratio, response.request_url ))
 			return True
 
-def bust( obj, session=None, url=lambda _: _, diff404=None ):
+def bust( obj, session=None, url=lambda _ : _, options=Options() ):
 	bust_url = url(obj)
 	response = fetch( bust_url, session )
 	response.request_url = bust_url
@@ -154,7 +165,7 @@ def bust( obj, session=None, url=lambda _: _, diff404=None ):
 									for _ in xrange(random.randrange(8,17))])
 		not_found = '{}://{}/{}'.format(parsed_url.scheme,
 										parsed_url.netloc,
-										diff404 or rand_str())
+										options.diff_not_found or rand_str())
 		baseline_response = fetch( not_found, session )
 		cache[parsed_url.netloc] = Baseline(url=url(obj),
 											code=baseline_response.status_code,
@@ -172,23 +183,21 @@ def spawn( worker, amount, *args, **kwargs ):
 
 def buster( urls,
 			session=None,
-			concurrency=10,
-			ratio=0.95,
 			url=lambda _: _,
 			action=None,
-			diff404=None ):
+			options=Options() ):
 
 	session = session or create_session()
-	q_in = JoinableQueue(concurrency)
-	q_out = Queue(concurrency)
+	q_in = JoinableQueue(options.concurrency)
+	q_out = Queue(options.concurrency)
 	workers = spawn(bust_worker,
-					concurrency,
+					options.concurrency,
 					q_in,
 					q_out,
 					session,
 					url,
-					diff404)
-	results = spawn( result_worker, 1, q_out, ratio, action )
+					options)
+	results = spawn( result_worker, 1, q_out, action, options )
 	[ q_in.put( _ ) for _ in urls ]
 	wait()
 
@@ -237,8 +246,10 @@ def parse_args():
 						help='show progress', default=False )
 	parser.add_argument('--ratio', metavar='0.95', dest='ratio', type=float,
 						help='diff ratio', default=0.95 )
-	parser.add_argument('--diff', metavar='404_NOT_FOUND', dest='diff',
+	parser.add_argument('--diff-not-found', metavar='404', dest='diff_not_found',
 						type=str, help='custom 404 path', default=None )
+	parser.add_argument('--force-diff', action='store_true', dest='force_diff',
+						help='force diff', default=False )
 	args = parser.parse_args()
 
 	if not args.file:
@@ -265,7 +276,8 @@ if __name__ == "__main__":
 	paths = load_file( args.file )
 	for target in args.target:
 		buster( urls( target, paths, args.exts, progress=args.progress ),
-				ratio=args.ratio,
-				concurrency=args.workers,
-				diff404=args.diff )
+				options=Options(ratio=args.ratio,
+								concurrency=args.workers,
+								force_diff=args.force_diff,
+								diff_not_found=args.diff_not_found) )
 		cache.clear()
